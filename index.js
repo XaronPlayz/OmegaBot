@@ -1,109 +1,142 @@
+require('dotenv').config();
 const express = require('express');
 const app = express();
-app.get('/', (req, res) => res.send('Ayumi Bot is alive!'));
+app.get('/', (req, res) => res.send('Omega Bot is alive!'));
 app.listen(3000, () => console.log('🌐 Web server running'));
-const { Client, GatewayIntentBits, SlashCommandBuilder, Routes } = require('discord.js');
+
+const { Client, GatewayIntentBits, SlashCommandBuilder, Routes, EmbedBuilder } = require('discord.js');
 const { REST } = require('@discordjs/rest');
-const fs = require('fs');
+const sqlite3 = require('sqlite3').verbose();
+const axios = require('axios');
 
-// Bot setup
+// --- Bot Setup ---
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-
-// Environment variables
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
+const SUPPORT_ROLE_ID = process.env.SUPPORT_ROLE_ID;
 
-// Known users storage (in-memory for simplicity)
-let knownUsers = new Set();
-if (fs.existsSync('knownUsers.json')) {
-  const data = fs.readFileSync('knownUsers.json', 'utf8');
-  knownUsers = new Set(JSON.parse(data));
-}
+// --- SQLite Setup ---
+const db = new sqlite3.Database('./data/database.sqlite', err => {
+    if (err) console.error(err.message);
+    else console.log('✅ Connected to SQLite database');
+});
+db.run(`CREATE TABLE IF NOT EXISTS stats (
+    user_id TEXT PRIMARY KEY,
+    points INTEGER DEFAULT 0,
+    messages INTEGER DEFAULT 0,
+    hooked BOOLEAN DEFAULT 0
+)`);
 
-// Define slash commands
+// --- Cooldowns ---
+const supportCooldown = new Map(); // userId -> timestamp
+
+// --- Slash Commands ---
 const commands = [
-  new SlashCommandBuilder()
-    .setName('hug')
-    .setDescription('Hug someone!')
-    .addUserOption(option => option.setName('target').setDescription('User to hug').setRequired(true)),
+    new SlashCommandBuilder().setName('info').setDescription('Display current server information'),
+    new SlashCommandBuilder().setName('userinfo').setDescription('Get detailed info about a user').addUserOption(o => o.setName('user').setDescription('Optional user')),
+    new SlashCommandBuilder().setName('stats').setDescription('Display user stats').addUserOption(o => o.setName('user').setDescription('Optional user')),
+    new SlashCommandBuilder().setName('avatar').setDescription('Show a user avatar').addUserOption(o => o.setName('user').setDescription('Optional user')),
+    new SlashCommandBuilder().setName('domains').setDescription('List available domains'),
+    new SlashCommandBuilder().setName('daily').setDescription('Show the daily leaderboard'),
+    new SlashCommandBuilder().setName('check').setDescription('Check if site and domain are online'),
+    new SlashCommandBuilder().setName('check-s').setDescription('Check site only'),
+    new SlashCommandBuilder().setName('check-d').setDescription('Check domain only'),
+    new SlashCommandBuilder().setName('hooked').setDescription('Show if a user is dual-hooked').addUserOption(o => o.setName('user').setDescription('Optional user')),
+    new SlashCommandBuilder().setName('site').setDescription('Give an instant dashboard link'),
+    new SlashCommandBuilder().setName('support').setDescription('Open support panel (15 min cooldown)'),
+    new SlashCommandBuilder().setName('purge').setDescription('Delete a number of messages').addIntegerOption(o => o.setName('amount').setDescription('Number of messages').setRequired(true))
+].map(c => c.toJSON());
 
-  new SlashCommandBuilder()
-    .setName('kiss')
-    .setDescription('Kiss someone!')
-    .addUserOption(option => option.setName('target').setDescription('User to kiss').setRequired(true))
-].map(cmd => cmd.toJSON());
-
-// Register global commands
+// --- Register Commands ---
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 (async () => {
-  try {
-    console.log('⚡ Registering global commands...');
-    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
-    console.log('✅ Global commands registered.');
-  } catch (err) {
-    console.error(err);
-  }
+    try {
+        console.log('⚡ Registering global commands...');
+        await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+        console.log('✅ Global commands registered.');
+    } catch (err) {
+        console.error(err);
+    }
 })();
 
-// Responses
-const hugResponses = ['Awww {user1} is hugging {user2} 🤗', '{user1} gives a warm hug to {user2}!'];
-const kissResponses = ['{user1} kisses {user2} 💋', '{user1} blows a kiss to {user2} ❤️'];
-
-// Helper to save known users
-function saveKnownUsers() {
-  fs.writeFileSync('knownUsers.json', JSON.stringify([...knownUsers]));
-}
-
-// Handle commands
+// --- Command Handler ---
 client.on('interactionCreate', async interaction => {
-  if (!interaction.isCommand()) return;
+    if (!interaction.isCommand()) return;
 
-  const user = interaction.user;
-  const target = interaction.options.getUser('target');
+    const user = interaction.user;
+    const command = interaction.commandName;
 
-  // Add both users to known users
-  knownUsers.add(user.id);
-  if (target) knownUsers.add(target.id);
-  saveKnownUsers();
-
-  // Check if command in DM
-  if (interaction.channel.type === 1) { // DM
-    if (!target) {
-      await interaction.reply(`You tried to ${interaction.commandName} yourself! 🤗`);
-      return;
-    }
-    if (knownUsers.has(target.id)) {
-      try {
-        await target.send(`${user.username} sent you a ${interaction.commandName}! ❤️`);
-        await interaction.reply(`✅ ${interaction.commandName} sent to ${target.username} via DM!`);
-      } catch (err) {
-        await interaction.reply(`❌ Could not DM ${target.username}.`);
-      }
-    } else {
-      await interaction.reply(`❌ ${target.username} is unknown to the bot.`);
-    }
-    return;
-  }
-
-  // Server response
-  if (!target) return interaction.reply('❌ You need to mention someone!');
-  let responseArray = interaction.commandName === 'hug' ? hugResponses : kissResponses;
-  const response = responseArray[Math.floor(Math.random() * responseArray.length)]
-    .replace('{user1}', `<@${user.id}>`)
-    .replace('{user2}', `<@${target.id}>`);
-
-  await interaction.reply(response);
-
-  // Optional DM to target if known
-  if (knownUsers.has(target.id)) {
     try {
-      await target.send(`${user.username} sent you a ${interaction.commandName}! ❤️`);
+        switch (command) {
+            case 'info':
+                {
+                    const guild = interaction.guild;
+                    const embed = new EmbedBuilder()
+                        .setTitle('Server Info')
+                        .addFields(
+                            { name: 'Name', value: guild.name },
+                            { name: 'ID', value: guild.id },
+                            { name: 'Members', value: `${guild.memberCount}` },
+                            { name: 'Owner', value: `${guild.ownerId}` }
+                        ).setColor('Blue');
+                    await interaction.reply({ embeds: [embed] });
+                }
+                break;
+
+            case 'userinfo':
+                {
+                    const member = interaction.options.getUser('user') || user;
+                    const embed = new EmbedBuilder()
+                        .setTitle('User Info')
+                        .addFields(
+                            { name: 'Username', value: member.username },
+                            { name: 'ID', value: member.id }
+                        ).setColor('Green');
+                    await interaction.reply({ embeds: [embed] });
+                }
+                break;
+
+            case 'avatar':
+                {
+                    const member = interaction.options.getUser('user') || user;
+                    await interaction.reply(member.displayAvatarURL({ dynamic: true, size: 1024 }));
+                }
+                break;
+
+            case 'support':
+                {
+                    const now = Date.now();
+                    if (supportCooldown.has(user.id) && now - supportCooldown.get(user.id) < 15 * 60 * 1000) {
+                        return interaction.reply(`⏱ You are on cooldown! Wait a bit.`);
+                    }
+                    supportCooldown.set(user.id, now);
+                    await interaction.reply(SUPPORT_ROLE_ID ? `<@&${SUPPORT_ROLE_ID}> ${user} needs support!` : `${user} needs support!`);
+                }
+                break;
+
+            case 'purge':
+                {
+                    if (!interaction.member.permissions.has('Administrator')) {
+                        return interaction.reply('❌ You need Administrator permissions!');
+                    }
+                    const amount = interaction.options.getInteger('amount');
+                    const channel = interaction.channel;
+                    const messages = await channel.messages.fetch({ limit: amount });
+                    await channel.bulkDelete(messages);
+                    await interaction.reply(`✅ Deleted ${messages.size} messages.`);
+                }
+                break;
+
+            // TODO: Implement remaining commands: stats, daily, domains, check, check-s, check-d, hooked, site
+            default:
+                await interaction.reply('Command not implemented yet.');
+        }
     } catch (err) {
-      console.log('Could not DM target user (privacy settings).');
+        console.error(err);
+        await interaction.reply('❌ An error occurred.');
     }
-  }
 });
 
-// Ready log
+// --- Ready ---
 client.once('ready', () => console.log(`✅ Logged in as ${client.user.tag}`));
 client.login(TOKEN);

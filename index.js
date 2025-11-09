@@ -4,7 +4,7 @@ const app = express();
 app.get('/', (req, res) => res.send('Omega Bot is alive!'));
 app.listen(process.env.PORT || 3000, () => console.log('🌐 Web server running'));
 
-const { Client, GatewayIntentBits, SlashCommandBuilder, Routes, EmbedBuilder, PermissionsBitField } = require('discord.js');
+const { Client, GatewayIntentBits, SlashCommandBuilder, Routes, EmbedBuilder, PermissionsBitField, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } = require('discord.js');
 const { REST } = require('@discordjs/rest');
 const axios = require('axios');
 
@@ -22,6 +22,7 @@ if (!TOKEN || !CLIENT_ID) {
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const supportCooldown = new Map();
 
+// Command definitions
 const commandDefs = [
   new SlashCommandBuilder().setName('info').setDescription('Display current server information'),
   new SlashCommandBuilder().setName('userinfo').setDescription('Get detailed info about a user').addUserOption(o => o.setName('user').setDescription('Optional user')),
@@ -38,6 +39,7 @@ const commandDefs = [
   new SlashCommandBuilder().setName('help').setDescription('List all commands and what they do')
 ].map(c => c.toJSON());
 
+// Register commands
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 (async () => {
   try {
@@ -55,6 +57,7 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
   }
 })();
 
+// Helper for HTTP checks
 async function httpCheck(url) {
   try {
     const res = await axios.get(url, { timeout: 8000, maxRedirects: 5, validateStatus: null });
@@ -64,14 +67,70 @@ async function httpCheck(url) {
   }
 }
 
+// Handle interactions
 client.on('interactionCreate', async interaction => {
   if (!interaction.isCommand()) return;
   const name = interaction.commandName;
   const user = interaction.user;
 
   try {
+    if (name === 'info') {
+      const g = interaction.guild;
+      if (!g) return interaction.reply({ content: 'This command must be used in a server.', ephemeral: true });
+      const embed = new EmbedBuilder()
+        .setTitle('Server Info')
+        .addFields(
+          { name: 'Name', value: g.name || 'Unknown', inline: true },
+          { name: 'ID', value: g.id, inline: true },
+          { name: 'Members', value: `${g.memberCount}`, inline: true },
+          { name: 'Owner ID', value: `${g.ownerId || 'Unknown'}`, inline: true },
+          { name: 'Created', value: `${new Date(g.createdTimestamp).toUTCString()}`, inline: true }
+        ).setColor(0x1F8B4C);
+      return interaction.reply({ embeds: [embed] });
+    }
+
+    if (name === 'userinfo') {
+      const target = interaction.options.getUser('user') || user;
+      const member = interaction.guild?.members.cache.get(target.id);
+      const embed = new EmbedBuilder()
+        .setTitle(`${target.username}#${target.discriminator}`)
+        .setThumbnail(target.displayAvatarURL({ dynamic: true, size: 512 }))
+        .addFields(
+          { name: 'User ID', value: target.id, inline: true },
+          { name: 'Account Created', value: `${target.createdAt.toUTCString()}`, inline: true },
+          { name: 'Joined Server', value: member ? `${member.joinedAt?.toUTCString() || 'Unknown'}` : 'Not in server', inline: true },
+          { name: 'Roles', value: member ? (member.roles.cache.filter(r => r.id !== interaction.guild.id).map(r => r.name).slice(0, 10).join(', ') || 'None') : 'N/A' }
+        ).setColor(0x0099ff);
+      return interaction.reply({ embeds: [embed] });
+    }
+
+    if (name === 'stats') {
+      const target = interaction.options.getUser('user') || user;
+      const embed = new EmbedBuilder()
+        .setTitle(`${target.username}'s Stats`)
+        .addFields(
+          { name: 'Points', value: '0', inline: true },
+          { name: 'Messages', value: '0', inline: true },
+          { name: 'Rank', value: 'Unranked', inline: true }
+        ).setColor(0x8A2BE2);
+      return interaction.reply({ embeds: [embed] });
+    }
+
+    if (name === 'avatar') {
+      const target = interaction.options.getUser('user') || user;
+      return interaction.reply({ content: target.displayAvatarURL({ dynamic: true, size: 1024 }) });
+    }
+
     if (name === 'domains') {
       return interaction.reply('robiox.com.py');
+    }
+
+    if (name === 'daily') {
+      const embed = new EmbedBuilder()
+        .setTitle('Daily Leaderboard')
+        .setDescription('1. <@000000000000000000> — 100 pts\n2. <@000000000000000001> — 80 pts\n3. <@000000000000000002> — 50 pts')
+        .setColor(0xFFD700);
+      return interaction.reply({ embeds: [embed] });
     }
 
     if (name === 'check') {
@@ -153,25 +212,73 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
+    // ===== Paginated Help =====
     if (name === 'help') {
-      const embed = new EmbedBuilder()
-        .setTitle('Omega Bot — Commands')
-        .addFields(
-          { name: '/info', value: 'Display current server information.' },
-          { name: '/userinfo [user]', value: 'Get detailed information about a user.' },
-          { name: '/stats [user]', value: 'Display your or another user’s stats.' },
-          { name: '/avatar [user]', value: 'Show a user’s avatar.' },
-          { name: '/domains', value: 'Gets the list of available domains.' },
-          { name: '/daily', value: 'Show the daily leaderboard (placeholder).' },
-          { name: '/check', value: 'Checks robiox.com.py and logged.tg/auth/omegabeamers.' },
-          { name: '/check-s', value: 'Checks the site only (logged.tg).' },
-          { name: '/check-d', value: 'Checks the domain only (robiox.com.py).' },
-          { name: '/site', value: `Gives the dashboard link (${DASHBOARD_LINK}).` },
-          { name: '/support', value: 'Opens support panel, pings role, 15 min cooldown.' },
-          { name: '/purge <amount|all>', value: 'Deletes messages (admin-only).' }
-        )
-        .setColor(0x00FFAA);
-      return interaction.reply({ embeds: [embed] });
+      const commandsList = [
+        { name: '/info', desc: 'Display current server information.' },
+        { name: '/userinfo [user]', desc: 'Get detailed information about a user.' },
+        { name: '/stats [user]', desc: 'Display your or another user’s stats.' },
+        { name: '/avatar [user]', desc: 'Show a user’s avatar.' },
+        { name: '/domains', desc: 'Gets the list of available domains.' },
+        { name: '/daily', desc: 'Show the daily leaderboard (placeholder).' },
+        { name: '/check', desc: 'Checks robiox.com.py and logged.tg/auth/omegabeamers.' },
+        { name: '/check-s', desc: 'Checks the site only (logged.tg).' },
+        { name: '/check-d', desc: 'Checks the domain only (robiox.com.py).' },
+        { name: '/site', desc: `Gives the dashboard link (${DASHBOARD_LINK}).` },
+        { name: '/support', desc: 'Opens support panel, pings role, 15 min cooldown.' },
+        { name: '/purge <amount|all>', desc: 'Deletes messages (admin-only).' }
+      ];
+
+      const pageSize = 5;
+      let page = 0;
+      const totalPages = Math.ceil(commandsList.length / pageSize);
+
+      const generateEmbed = (pageIndex) => {
+        const start = pageIndex * pageSize;
+        const end = start + pageSize;
+        const currentCommands = commandsList.slice(start, end);
+        return new EmbedBuilder()
+          .setTitle('Omega Bot — Commands')
+          .setColor(0x00FFAA)
+          .setFooter({ text: `Page ${pageIndex + 1} of ${totalPages}` })
+          .addFields(currentCommands.map(c => ({ name: c.name, value: c.desc })));
+      };
+
+      const row = new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder().setCustomId('prev').setLabel('⬅ Previous').setStyle(ButtonStyle.Primary).setDisabled(page === 0),
+          new ButtonBuilder().setCustomId('next').setLabel('Next ➡').setStyle(ButtonStyle.Primary).setDisabled(page === totalPages - 1)
+        );
+
+      const reply = await interaction.reply({ embeds: [generateEmbed(page)], components: [row], fetchReply: true });
+
+      const collector = reply.createMessageComponentCollector({ componentType: ComponentType.Button, time: 120000 });
+
+      collector.on('collect', async i => {
+        if (i.user.id !== interaction.user.id) {
+          return i.reply({ content: "You can't control this help menu.", ephemeral: true });
+        }
+        if (i.customId === 'next') page++;
+        if (i.customId === 'prev') page--;
+        await i.update({ embeds: [generateEmbed(page)], components: [
+          new ActionRowBuilder()
+            .addComponents(
+              new ButtonBuilder().setCustomId('prev').setLabel('⬅ Previous').setStyle(ButtonStyle.Primary).setDisabled(page === 0),
+              new ButtonBuilder().setCustomId('next').setLabel('Next ➡').setStyle(ButtonStyle.Primary).setDisabled(page === totalPages - 1)
+            )
+        ]});
+      });
+
+      collector.on('end', async () => {
+        if (!reply.deleted) {
+          const disabledRow = new ActionRowBuilder()
+            .addComponents(
+              new ButtonBuilder().setCustomId('prev').setLabel('⬅ Previous').setStyle(ButtonStyle.Primary).setDisabled(true),
+              new ButtonBuilder().setCustomId('next').setLabel('Next ➡').setStyle(ButtonStyle.Primary).setDisabled(true)
+            );
+          await reply.edit({ components: [disabledRow] });
+        }
+      });
     }
   } catch (err) {
     console.error(err);
@@ -182,4 +289,5 @@ client.on('interactionCreate', async interaction => {
 client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 });
+
 client.login(TOKEN);
